@@ -15,6 +15,9 @@ type Config struct {
 	// Database config
 	DBConn string
 
+	// Redis config
+	RedisAddr string
+
 	// Email config
 	SMTPHost    string
 	SMTPPort    string
@@ -41,6 +44,7 @@ func LoadConfig(path string) *Config {
 		return &Config{
 			BaseURL:                "localhost:8080",
 			DBConn:                 os.Getenv("DB_CONN"),
+			RedisAddr:              os.Getenv("REDIS_ADDRESS"),
 			SMTPHost:               "smtp.gmail.com",
 			SMTPPort:               "587",
 			Email:                  os.Getenv("EMAIL"),
@@ -82,6 +86,7 @@ func LoadConfig(path string) *Config {
 	return &Config{
 		BaseURL:                os.Getenv("BASE_URL"),
 		DBConn:                 os.Getenv("DB_CONN"),
+		RedisAddr:              os.Getenv("REDIS_ADDRESS"),
 		SMTPHost:               os.Getenv("SMTP_HOST"),
 		SMTPPort:               os.Getenv("SMTP_PORT"),
 		Email:                  os.Getenv("EMAIL"),
