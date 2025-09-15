@@ -32,14 +32,14 @@ const (
 
 type Account struct {
 	gorm.Model
-	Username         string         `json:"username"`
-	Email            string         `json:"email"`
+	Username         string         `json:"username" gorm:"unique"`
+	Email            string         `json:"email" gorm:"unique"`
 	Password         sql.NullString `json:"password"`
 	Role             Role           `json:"role"`
-	OauthProvider    OauthProvider  `json:"oauth_provider"`
-	OauthProviderID  string         `json:"oauth_provider_id"`
+	OauthProvider    sql.NullString `json:"oauth_provider"`
+	OauthProviderID  sql.NullString `json:"oauth_provider_id"`
 	TokenVersion     uint           `json:"token_version"`
-	Friends          []Account      `json:"friends" gorm:"many2many:user_languages;"`
+	Friends          []Account      `json:"friends" gorm:"many2many:friends;"`
 	MessagesSent     []Message      `json:"messages_sent" gorm:"foreignKey:SenderID"`
 	MessagesReceived []Message      `json:"messages_received" gorm:"foreignKey:ReceiverID"`
 }
