@@ -7,6 +7,7 @@ import (
 	"github.com/danglnh07/zola/api"
 	"github.com/danglnh07/zola/db"
 	"github.com/danglnh07/zola/service/mail"
+	"github.com/danglnh07/zola/service/notify"
 	"github.com/danglnh07/zola/service/worker"
 	"github.com/danglnh07/zola/util"
 	"github.com/hibiken/asynq"
@@ -32,6 +33,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create the hub
+	hub := notify.NewHub()
+
 	// Connect to Redis
 	redisOpt := asynq.RedisClientOpt{
 		Addr: config.RedisAddr,
@@ -39,22 +43,22 @@ func main() {
 	distributor := worker.NewRedisTaskDistributor(redisOpt, logger)
 
 	// Run the task processor in goroutine (since the asynq.Start will block the main thread)
-	go func(opts asynq.RedisClientOpt, query *db.Queries, cfg *util.Config) {
+	go func(opts asynq.RedisClientOpt, query *db.Queries, cfg *util.Config, h *notify.Hub) {
 		// Create services that will be used by the worker
 		mailService := mail.NewEmailService(cfg)
 
 		// Create the processor
-		processor := worker.NewRedisTaskProcessor(opts, query, mailService, logger)
+		processor := worker.NewRedisTaskProcessor(opts, query, mailService, h, logger)
 
 		// Start process tasks
 		if err := processor.Start(); err != nil {
 			logger.Error("failed to run task processor", "error", err)
 			os.Exit(1)
 		}
-	}(redisOpt, queries, config)
+	}(redisOpt, queries, config, hub)
 
 	// Create and start server
-	server := api.NewServer(queries, distributor, config, logger)
+	server := api.NewServer(queries, distributor, hub, config, logger)
 	if err = server.Start(); err != nil {
 		logger.Error("Failed to run the server or server shutdown unexpectedly", "error", err)
 		os.Exit(1)

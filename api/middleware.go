@@ -16,6 +16,7 @@ import (
 
 const claimsKey = "claims-key"
 
+// Auth middleware: verify token, check token version, check if the role is allowed for that endpoint
 func (server *Server) AuthMiddleware() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		// Get the token from request header
@@ -65,6 +66,7 @@ func (server *Server) AuthMiddleware() gin.HandlerFunc {
 	}
 }
 
+// CORS middleware
 func (server *Server) CORSMiddlware() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		ctx.Writer.Header().Set("Access-Control-Allow-Origin", fmt.Sprintf("http://%s", server.config.BaseURL))

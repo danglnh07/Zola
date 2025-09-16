@@ -10,19 +10,22 @@ import (
 	"github.com/hibiken/asynq"
 )
 
-type Payload struct {
+// Payload struct for send email job
+type EmailPayload struct {
 	Email    string `json:"email"`
 	Username string `json:"username"`
 }
 
+// Send email key
 const SendEmail = "send-welcome-email"
 
 //go:embed welcome.html
 var welcome embed.FS
 
+// Method to distribute send email task
 func (distributor *RedisTaskDistributor) DistributeTaskSendEmail(
 	ctx context.Context,
-	payload Payload,
+	payload EmailPayload,
 	opts ...asynq.Option,
 ) (err error) {
 	// Marshal payload
@@ -46,11 +49,12 @@ func (distributor *RedisTaskDistributor) DistributeTaskSendEmail(
 	return nil
 }
 
+// Method to process send email task
 func (processor *RedisTaskProcessor) ProcessTaskSendEmail(ctx context.Context, task *asynq.Task) (err error) {
 	processor.logger.Info("Start processing task", "task_name", SendEmail)
 
 	// Unmarshal payload
-	var payload Payload
+	var payload EmailPayload
 	if err = json.Unmarshal(task.Payload(), &payload); err != nil {
 		return err
 	}

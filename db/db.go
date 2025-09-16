@@ -24,5 +24,5 @@ func NewQueries(config *util.Config) (*Queries, error) {
 }
 
 func (queries *Queries) AutoMigration() error {
-	return queries.DB.AutoMigrate(&Account{}, &Message{})
+	return queries.DB.AutoMigrate(&Account{}, &Friendship{}, &Message{}, &Notification{})
 }

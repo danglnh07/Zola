@@ -20,11 +20,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// Interface for OAuth
 type OAuth interface {
 	HandleOAuth(ctx *gin.Context)
 	HandleCallback(ctx *gin.Context)
 }
 
+// Google OAuth struct, which holds specific OAuth configs, and dependencies for login action
 type GoogleOAuth struct {
 	OAuthConfig *oauth2.Config
 	queries     *db.Queries
@@ -34,20 +36,22 @@ type GoogleOAuth struct {
 	logger      *slog.Logger
 }
 
-// This is the response from OAuth provider, not data return to client
+// This is the response from OAuth provider when fetching data, not data return to client
 type UserDataResp struct {
 	ID       string `json:"id"`
 	Username string `json:"name"`
 	Email    string `json:"email"`
 }
 
-func NewGoogleAuth(
+// Constructor method for GoogleAuth
+func NewGoogleOAuth(
 	queries *db.Queries,
 	distributor worker.TaskDistributor,
 	jwtService *security.JWTService,
 	config *util.Config,
 	logger *slog.Logger,
 ) OAuth {
+	// Config Google OAuth2
 	googleConfig := &oauth2.Config{
 		RedirectURL:  fmt.Sprintf("%s/oauth2/callback", config.BaseURL),
 		ClientID:     config.GoogleClientID,
@@ -66,6 +70,7 @@ func NewGoogleAuth(
 	}
 }
 
+// Handler for OAuth login. It will redirect to the login page of the OAuth provider
 func (auth *GoogleOAuth) HandleOAuth(ctx *gin.Context) {
 	// Get the role from query parameter and building the state
 	role := ctx.Query("role")
@@ -78,6 +83,7 @@ func (auth *GoogleOAuth) HandleOAuth(ctx *gin.Context) {
 	ctx.Redirect(http.StatusTemporaryRedirect, url)
 }
 
+// Handler for processing callback
 func (auth *GoogleOAuth) HandleCallback(ctx *gin.Context) {
 	// Get the code return by OAuth provider
 	code := ctx.Query("code")
@@ -86,6 +92,7 @@ func (auth *GoogleOAuth) HandleCallback(ctx *gin.Context) {
 		return
 	}
 
+	// Exchange code to get access token
 	token, err := auth.OAuthConfig.Exchange(context.Background(), code)
 	if err != nil {
 		auth.logger.Error("GET /oauth2/callback: failed to exchange code for token", "error", err)
@@ -146,7 +153,7 @@ func (auth *GoogleOAuth) HandleCallback(ctx *gin.Context) {
 			}
 
 			// Create background tasks: send verification email
-			err = auth.distributor.DistributeTaskSendEmail(context.Background(), worker.Payload{
+			err = auth.distributor.DistributeTaskSendEmail(context.Background(), worker.EmailPayload{
 				Email:    account.Email,
 				Username: account.Username,
 			})

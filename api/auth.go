@@ -14,22 +14,26 @@ import (
 	"gorm.io/gorm"
 )
 
+// User data when return from a success login
 type UserData struct {
 	ID       uint   `json:"id"` // Account ID
 	Username string `json:"username"`
 	Email    string `json:"email"`
 }
 
+// Holds access token and refresh token
 type Tokens struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 }
 
+// Response when login success, which contains user data and tokens
 type AuthResponse struct {
 	UserData UserData `json:"user"`
 	Tokens   Tokens   `json:"tokens"`
 }
 
+// Request for password register
 type RegisterRequest struct {
 	Username string `json:"username" binding:"required"`
 	Email    string `json:"email" binding:"required"`
@@ -37,6 +41,7 @@ type RegisterRequest struct {
 	Role     string `json:"role" binding:"required"`
 }
 
+// Handler for password register
 func (server *Server) HandleRegister(ctx *gin.Context) {
 	// Get and validate request body
 	var req RegisterRequest
@@ -73,12 +78,12 @@ func (server *Server) HandleRegister(ctx *gin.Context) {
 	})
 	if result.Error != nil {
 		// If email or username already taken
-		if strings.Contains(result.Error.Error(), "accounts_email_key") {
+		if strings.Contains(result.Error.Error(), "accounts_email") {
 			ctx.JSON(http.StatusBadRequest, ErrorResponse{"Email already taken"})
 			return
 		}
 
-		if strings.Contains(result.Error.Error(), "accounts_username_key") {
+		if strings.Contains(result.Error.Error(), "accounts_username") {
 			ctx.JSON(http.StatusBadRequest, ErrorResponse{"Username already taken"})
 			return
 		}
@@ -90,8 +95,7 @@ func (server *Server) HandleRegister(ctx *gin.Context) {
 	}
 
 	// Distribute background task: send welcome email
-	// Create background tasks: send verification email
-	err = server.distributor.DistributeTaskSendEmail(context.Background(), worker.Payload{
+	err = server.distributor.DistributeTaskSendEmail(context.Background(), worker.EmailPayload{
 		Email:    req.Email,
 		Username: req.Username,
 	})
@@ -105,6 +109,7 @@ func (server *Server) HandleRegister(ctx *gin.Context) {
 	ctx.JSON(http.StatusCreated, "Register successfully")
 }
 
+// Request struct for password login
 type LoginRequest struct {
 	// We allow login via username or email, so we will validate manually instead of using binding for these fields
 	Username string `json:"username"`
@@ -112,6 +117,7 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+// Handler for password login
 func (server *Server) HandleLogin(ctx *gin.Context) {
 	// Get and validate request
 	var req LoginRequest
@@ -143,7 +149,7 @@ func (server *Server) HandleLogin(ctx *gin.Context) {
 		return
 	}
 
-	// If found, compate password
+	// If found, compare password
 	if !security.BcryptCompare(account.Password.String, req.Password) {
 		ctx.JSON(http.StatusNotFound, ErrorResponse{"Incorrect login credential"})
 		return
@@ -180,6 +186,7 @@ func (server *Server) HandleLogin(ctx *gin.Context) {
 	})
 }
 
+// Handler for refresh token endpoint
 func (server *Server) HandleRefreshToken(ctx *gin.Context) {
 	// Get claims from refresh token from context
 	claims, _ := ctx.Get(claimsKey)
@@ -188,7 +195,7 @@ func (server *Server) HandleRefreshToken(ctx *gin.Context) {
 	// Increase the token version in database
 	result := server.queries.DB.
 		Table("accounts").
-		Where("id", customClaims.ID).
+		Where("id = ?", customClaims.ID).
 		Update("token_version", gorm.Expr("token_version + ?", 1))
 	if result.Error != nil {
 		server.logger.Error("POST /auth/token/refresh: failed to update token version", "error", result.Error)
@@ -221,6 +228,7 @@ func (server *Server) HandleRefreshToken(ctx *gin.Context) {
 	})
 }
 
+// Handler for logout
 func (server *Server) HandleLogout(ctx *gin.Context) {
 	// Get claims from access token from context
 	claims, _ := ctx.Get(claimsKey)
@@ -229,7 +237,7 @@ func (server *Server) HandleLogout(ctx *gin.Context) {
 	// Increase the token version in database
 	result := server.queries.DB.
 		Table("accounts").
-		Where("id", customClaims.ID).
+		Where("id = ?", customClaims.ID).
 		Update("token_version", gorm.Expr("token_version + ?", 1))
 	if result.Error != nil {
 		server.logger.Error("POST /auth/logout: failed to update token version", "error", result.Error)
