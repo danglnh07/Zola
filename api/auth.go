@@ -2,173 +2,164 @@ package api
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/danglnh07/zola/db"
 	"github.com/danglnh07/zola/service/security"
-	"github.com/danglnh07/zola/service/worker"
+	"github.com/danglnh07/zola/util"
 	"github.com/gin-gonic/gin"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"gorm.io/gorm"
 )
 
-// User data when return from a success login
+// User data return to client
 type UserData struct {
 	ID       uint   `json:"id"` // Account ID
 	Username string `json:"username"`
 	Email    string `json:"email"`
 }
 
-// Holds access token and refresh token
+// Struct holds both access token and refresh token
 type Tokens struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 }
 
-// Response when login success, which contains user data and tokens
+// Response struct after login
 type AuthResponse struct {
 	UserData UserData `json:"user"`
 	Tokens   Tokens   `json:"tokens"`
 }
 
-// Request for password register
-type RegisterRequest struct {
-	Username string `json:"username" binding:"required"`
-	Email    string `json:"email" binding:"required"`
-	Password string `json:"password" bidning:"required"`
-	Role     string `json:"role" binding:"required"`
+// OAuth interface
+type OAuth interface {
+	HandleOAuth(ctx *gin.Context)
+	HandleCallback(ctx *gin.Context)
 }
 
-// Handler for password register
-func (server *Server) HandleRegister(ctx *gin.Context) {
-	// Get and validate request body
-	var req RegisterRequest
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, ErrorResponse{"Invalid request body: " + err.Error()})
-		return
-	}
-
-	// Check role
-	role := db.Role(req.Role)
-	if role != db.User && role != db.Admin {
-		ctx.JSON(http.StatusBadRequest, ErrorResponse{"Invalid role"})
-		return
-	}
-
-	// Hash password
-	hashed, err := security.BcryptHash(req.Password)
-	if err != nil {
-		server.logger.Error("POST /api/auth/register: failed to hash password")
-		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
-		return
-	}
-
-	// Insert into database
-	result := server.queries.DB.Create(&db.Account{
-		Model:           gorm.Model{},
-		Username:        req.Username,
-		Email:           req.Email,
-		Password:        sql.NullString{String: hashed, Valid: true},
-		Role:            role,
-		OauthProvider:   sql.NullString{Valid: false},
-		OauthProviderID: sql.NullString{Valid: false},
-		TokenVersion:    1,
-	})
-	if result.Error != nil {
-		// If email or username already taken
-		if strings.Contains(result.Error.Error(), "accounts_email") {
-			ctx.JSON(http.StatusBadRequest, ErrorResponse{"Email already taken"})
-			return
-		}
-
-		if strings.Contains(result.Error.Error(), "accounts_username") {
-			ctx.JSON(http.StatusBadRequest, ErrorResponse{"Username already taken"})
-			return
-		}
-
-		// Other database error
-		server.logger.Error("POST /api/auth/register: failed to create account", "error", err)
-		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
-		return
-	}
-
-	// Distribute background task: send welcome email
-	err = server.distributor.DistributeTaskSendEmail(context.Background(), worker.EmailPayload{
-		Email:    req.Email,
-		Username: req.Username,
-	})
-	if err != nil {
-		server.logger.Error("POST /api/auth/register: failed to distribute \"send welcome email\" task",
-			"error", err)
-		// Should NOT return here
-	}
-
-	// Send message back to client (NOT generate tokens here)
-	ctx.JSON(http.StatusCreated, "Register successfully")
+// OAuth implementation of Google
+type GoogleOAuth struct {
+	OAuthConfig *oauth2.Config
+	queries     *db.Queries
+	jwtService  *security.JWTService
+	config      *util.Config
+	logger      *slog.Logger
 }
 
-// Request struct for password login
-type LoginRequest struct {
-	// We allow login via username or email, so we will validate manually instead of using binding for these fields
-	Username string `json:"username"`
+// This is the response from OAuth provider, not data return to client
+type UserDataResp struct {
+	ID       string `json:"id"`
+	Username string `json:"name"`
 	Email    string `json:"email"`
-	Password string `json:"password" binding:"required"`
 }
 
-// Handler for password login
-func (server *Server) HandleLogin(ctx *gin.Context) {
-	// Get and validate request
-	var req LoginRequest
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		server.logger.Error("POST /api/auth/login", "error", err)
-		ctx.JSON(http.StatusBadRequest, ErrorResponse{"Invalid request body"})
+func NewGoogleAuth(
+	queries *db.Queries,
+	jwtService *security.JWTService,
+	config *util.Config,
+	logger *slog.Logger,
+) OAuth {
+	googleConfig := &oauth2.Config{
+		RedirectURL:  fmt.Sprintf("%s/oauth2/callback", config.BaseURL),
+		ClientID:     config.GoogleClientID,
+		ClientSecret: config.GoogleClientSecret,
+		Scopes:       []string{"https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"},
+		Endpoint:     google.Endpoint,
+	}
+
+	return &GoogleOAuth{
+		OAuthConfig: googleConfig,
+		queries:     queries,
+		jwtService:  jwtService,
+		config:      config,
+		logger:      logger,
+	}
+}
+
+func (auth *GoogleOAuth) HandleOAuth(ctx *gin.Context) {
+	url := auth.OAuthConfig.AuthCodeURL("")
+	ctx.Redirect(http.StatusTemporaryRedirect, url)
+}
+
+func (auth *GoogleOAuth) HandleCallback(ctx *gin.Context) {
+	// Get the code return by OAuth provider
+	code := ctx.Query("code")
+	if code == "" {
+		ctx.JSON(http.StatusBadRequest, ErrorResponse{"Internal server error"})
 		return
 	}
 
-	// Check if username or email exists
-	if req.Username == "" && req.Email == "" {
-		ctx.JSON(http.StatusBadRequest, ErrorResponse{"Missing credential, please provide at least username or email"})
-		return
-	}
-
-	// Fetch data from database
-	var account db.Account
-	result := server.queries.DB.Where("username = ? OR email = ?", req.Username, req.Email).Find(&account)
-	if result.Error != nil {
-		// If login credential is incorrect
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			ctx.JSON(http.StatusNotFound, ErrorResponse{"Incorrect login credential"})
-			return
-		}
-
-		// Other database errors
-		server.logger.Error("POST /api/auth/login: failed to fetch account data from database", "error", result.Error)
+	token, err := auth.OAuthConfig.Exchange(context.Background(), code)
+	if err != nil {
+		auth.logger.Error("GET /oauth2/callback: failed to exchange code for token", "error", err)
 		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
 		return
 	}
 
-	// If found, compare password
-	if !security.BcryptCompare(account.Password.String, req.Password) {
-		ctx.JSON(http.StatusNotFound, ErrorResponse{"Incorrect login credential"})
+	// Fetch user data
+	client := auth.OAuthConfig.Client(context.Background(), token)
+	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	if err != nil {
+		auth.logger.Error("GET /oauth2/callback: failed to fetch user data from OAuth provider")
+		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
 		return
+	}
+	defer resp.Body.Close()
+
+	// Get user data from response
+	var userData UserDataResp
+	if err = json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+		auth.logger.Error("GET /oauth2/callback: failed to decode user data fetch from OAuth provider", "error", err)
+		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
+		return
+	}
+
+	// Fetch user from database to check if they exists first
+	var account = db.Account{}
+	result := auth.queries.DB.
+		Where("oauth_provider = ? AND oauth_provider_id = ?", db.Google, userData.ID).
+		First(&account)
+	if result.Error != nil {
+		// If not found any user with this oauth_id -> create account
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			account.Username = userData.Username
+			account.Email = userData.Email
+			account.OauthProvider = string(db.Google)
+			account.OauthProviderID = userData.ID
+			account.TokenVersion = 1
+			result = auth.queries.DB.Create(&account)
+			if result.Error != nil {
+				auth.logger.Error("GET /oauth2/callback: failed to inset user data into database")
+				ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
+				return
+			}
+		} else {
+			// Other database errors
+			auth.logger.Error("GET /oauth2/callback: failed to fetch user data from database")
+			ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
+			return
+		}
 	}
 
 	// Create JWT tokens and return it back to client
-	accessToken, err := server.jwtService.CreateToken(
-		account.ID, account.Role, security.AccessToken, int(account.TokenVersion),
+	accessToken, err := auth.jwtService.CreateToken(
+		account.ID, security.AccessToken, int(account.TokenVersion),
 	)
 	if err != nil {
-		server.logger.Error("POST /api/auth/login: failed to create JWT access token")
+		auth.logger.Error("GET /oauth2/callback: failed to create JWT access token")
 		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
 		return
 	}
-	refreshToken, err := server.jwtService.CreateToken(
-		account.ID, account.Role, security.RefreshToken, int(account.TokenVersion),
+	refreshToken, err := auth.jwtService.CreateToken(
+		account.ID, security.RefreshToken, int(account.TokenVersion),
 	)
 	if err != nil {
-		server.logger.Error("POST /api/auth/login: failed to create JWT refresh token")
+		auth.logger.Error("GET /oauth2/callback: failed to create JWT refresh token")
 		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
 		return
 	}
@@ -184,66 +175,4 @@ func (server *Server) HandleLogin(ctx *gin.Context) {
 			RefreshToken: refreshToken,
 		},
 	})
-}
-
-// Handler for refresh token endpoint
-func (server *Server) HandleRefreshToken(ctx *gin.Context) {
-	// Get claims from refresh token from context
-	claims, _ := ctx.Get(claimsKey)
-	customClaims := claims.(*security.CustomClaims)
-
-	// Increase the token version in database
-	result := server.queries.DB.
-		Table("accounts").
-		Where("id = ?", customClaims.ID).
-		Update("token_version", gorm.Expr("token_version + ?", 1))
-	if result.Error != nil {
-		server.logger.Error("POST /auth/token/refresh: failed to update token version", "error", result.Error)
-		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
-		return
-	}
-
-	// Create new access token and refresh token
-	accessToken, err := server.jwtService.CreateToken(
-		customClaims.ID, customClaims.Role, security.AccessToken, int(customClaims.Version+1),
-	)
-	if err != nil {
-		server.logger.Error("POST /auth/token/refresh: failed to create JWT access token")
-		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
-		return
-	}
-	refreshToken, err := server.jwtService.CreateToken(
-		customClaims.ID, customClaims.Role, security.RefreshToken, int(customClaims.Version+1),
-	)
-	if err != nil {
-		server.logger.Error("POST /auth/token/refresh: failed to create JWT access token")
-		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
-		return
-	}
-
-	// Return the access token back to client
-	ctx.JSON(http.StatusOK, map[string]string{
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
-	})
-}
-
-// Handler for logout
-func (server *Server) HandleLogout(ctx *gin.Context) {
-	// Get claims from access token from context
-	claims, _ := ctx.Get(claimsKey)
-	customClaims := claims.(*security.CustomClaims)
-
-	// Increase the token version in database
-	result := server.queries.DB.
-		Table("accounts").
-		Where("id = ?", customClaims.ID).
-		Update("token_version", gorm.Expr("token_version + ?", 1))
-	if result.Error != nil {
-		server.logger.Error("POST /auth/logout: failed to update token version", "error", result.Error)
-		ctx.JSON(http.StatusInternalServerError, ErrorResponse{"Internal server error"})
-		return
-	}
-
-	ctx.JSON(http.StatusOK, "Logout successfully")
 }

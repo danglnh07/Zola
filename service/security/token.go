@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/danglnh07/zola/db"
 	"github.com/danglnh07/zola/util"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -24,7 +23,6 @@ const (
 
 type CustomClaims struct {
 	ID                   uint      `json:"id"`
-	Role                 db.Role   `json:"role"`
 	TokenType            TokenType `json:"token_type"`
 	Version              int       `json:"version"`
 	jwt.RegisteredClaims           // Embed the JWT Registered claims
@@ -36,7 +34,7 @@ func NewJWTService(config *util.Config) *JWTService {
 	}
 }
 
-func (service *JWTService) CreateToken(id uint, role db.Role, tokenType TokenType, version int) (string, error) {
+func (service *JWTService) CreateToken(id uint, tokenType TokenType, version int) (string, error) {
 	// Check token type and decide expiration time based on type
 	var expiration time.Duration
 	switch tokenType {
@@ -51,7 +49,6 @@ func (service *JWTService) CreateToken(id uint, role db.Role, tokenType TokenTyp
 	// Create custom JWT claim
 	claims := CustomClaims{
 		ID:        id,
-		Role:      role,
 		TokenType: tokenType,
 		Version:   version,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -101,11 +98,6 @@ func (service *JWTService) VerifyToken(signedToken string) (*CustomClaims, error
 	// Check if this is the correct issuer
 	if claims.Issuer != Issuer {
 		return nil, fmt.Errorf("invalid issuer")
-	}
-
-	// Check if this is the correct role
-	if claims.Role != db.Admin && claims.Role != db.User {
-		return nil, fmt.Errorf("invalid role")
 	}
 
 	// Check if the token type is correct

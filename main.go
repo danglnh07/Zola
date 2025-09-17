@@ -1,13 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/danglnh07/zola/api"
 	"github.com/danglnh07/zola/db"
-	"github.com/danglnh07/zola/service/mail"
-	"github.com/danglnh07/zola/service/notify"
+	"github.com/danglnh07/zola/service/pubsub"
 	"github.com/danglnh07/zola/service/worker"
 	"github.com/danglnh07/zola/util"
 	"github.com/hibiken/asynq"
@@ -34,7 +34,8 @@ func main() {
 	}
 
 	// Create the hub
-	hub := notify.NewHub()
+	hub := pubsub.NewHub()
+	logger.Info("", "Main hub", fmt.Sprintf("%p", hub))
 
 	// Connect to Redis
 	redisOpt := asynq.RedisClientOpt{
@@ -43,24 +44,27 @@ func main() {
 	distributor := worker.NewRedisTaskDistributor(redisOpt, logger)
 
 	// Run the task processor in goroutine (since the asynq.Start will block the main thread)
-	go func(opts asynq.RedisClientOpt, query *db.Queries, cfg *util.Config, h *notify.Hub) {
-		// Create services that will be used by the worker
-		mailService := mail.NewEmailService(cfg)
-
-		// Create the processor
-		processor := worker.NewRedisTaskProcessor(opts, query, mailService, h, logger)
-
-		// Start process tasks
-		if err := processor.Start(); err != nil {
-			logger.Error("failed to run task processor", "error", err)
-			os.Exit(1)
-		}
-	}(redisOpt, queries, config, hub)
+	go StartBackgroundProcessor(redisOpt, queries, hub, logger)
 
 	// Create and start server
-	server := api.NewServer(queries, distributor, hub, config, logger)
+	server := api.NewServer(queries, config, hub, distributor, logger)
 	if err = server.Start(); err != nil {
 		logger.Error("Failed to run the server or server shutdown unexpectedly", "error", err)
 		os.Exit(1)
 	}
+}
+
+func StartBackgroundProcessor(
+	redisOpts asynq.RedisClientOpt,
+	queries *db.Queries,
+	hub *pubsub.Hub,
+	logger *slog.Logger,
+) error {
+	logger.Info("", "Start background process hub", fmt.Sprintf("%p", hub))
+
+	// Create the processor
+	processor := worker.NewRedisTaskProcessor(redisOpts, queries, hub, logger)
+
+	// Start process tasks
+	return processor.Start()
 }

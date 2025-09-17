@@ -1,55 +1,71 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/danglnh07/zola/db"
-	"github.com/danglnh07/zola/service/notify"
+	"github.com/danglnh07/zola/service/pubsub"
 	"github.com/danglnh07/zola/service/security"
 	"github.com/danglnh07/zola/service/worker"
 	"github.com/danglnh07/zola/util"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
 
-// Server struct, which holds the router, config and all dependencies
 type Server struct {
-	mux         *gin.Engine
-	queries     *db.Queries
-	jwtService  *security.JWTService
-	distributor worker.TaskDistributor
-	hub         *notify.Hub
-	oauth       OAuth
+	mux     *gin.Engine
+	queries *db.Queries
+
 	limiter     *RateLimiter
-	config      *util.Config
-	logger      *slog.Logger
+	jwtService  *security.JWTService
+	oauth       OAuth
+	upgrader    *websocket.Upgrader
+	distributor worker.TaskDistributor
+	hub         *pubsub.Hub
+
+	config *util.Config
+	logger *slog.Logger
 }
 
-// Universal error response struct
-type ErrorResponse struct {
-	Message string `json:"error"`
-}
-
-// Constructor method for Server struct
 func NewServer(
 	queries *db.Queries,
-	distributor worker.TaskDistributor,
-	hub *notify.Hub,
 	config *util.Config,
+	hub *pubsub.Hub,
+	distributor worker.TaskDistributor,
 	logger *slog.Logger,
 ) *Server {
+	logger.Info("", "Server hub", fmt.Sprintf("%p", hub))
+
+	// Create depenency
 	jwtService := security.NewJWTService(config)
+	oauth := NewGoogleAuth(queries, jwtService, config, logger)
 
 	return &Server{
-		mux:         gin.Default(),
-		queries:     queries,
-		jwtService:  jwtService,
+		mux:     gin.Default(),
+		queries: queries,
+
+		limiter:    NewRateLimiter(config.MaxRequest, config.RefillRate),
+		jwtService: jwtService,
+		oauth:      oauth,
+		upgrader: &websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
+		},
 		distributor: distributor,
 		hub:         hub,
-		oauth:       NewGoogleOAuth(queries, distributor, jwtService, config, logger),
-		limiter:     NewRateLimiter(config.MaxRequest, config.RefillRate),
-		config:      config,
-		logger:      logger,
+
+		config: config,
+		logger: logger,
 	}
+}
+
+type ErrorResponse struct {
+	Message string `json:"error"`
 }
 
 // Helper method to register handler to route
@@ -60,27 +76,22 @@ func (server *Server) RegisterHandler() {
 	api := server.mux.Group("/api")
 	{
 		// Auth routes
-		auth := api.Group("/auth")
-		{
-			auth.POST("/register", server.HandleRegister)
-			auth.POST("/login", server.HandleLogin)
-			auth.POST("/token/refresh", server.AuthMiddleware(), server.HandleRefreshToken)
-			auth.POST("/logout", server.AuthMiddleware(), server.HandleLogout)
-		}
 		api.GET("/oauth", server.oauth.HandleOAuth)
 
-		// Friends routes
-		friend := api.Group("/friends", server.AuthMiddleware())
-		{
-			friend.POST("", server.HandleAddFriend)
-			friend.POST("/:id", server.HandleUpdateFriendshipStatus)
-		}
+		// Send messages
+		api.POST("/messages", server.AuthMiddleware(), server.HandleSendMessage)
 
-		// Notification routes
-		api.GET("/notification/stream", server.AuthMiddleware(), server.SSEHandler)
+		// Get online users
+		api.GET("/users/online", server.AuthMiddleware(), server.HandleGetOnlineUsers)
 	}
 
-	// Callback URL
+	// Websocket routes
+	ws := server.mux.Group("/ws")
+	{
+		ws.GET("/messages", server.AuthMiddleware(), server.HandleWS)
+	}
+
+	// Callback URL for OAuth2
 	server.mux.GET("/oauth2/callback", server.oauth.HandleCallback)
 }
 
