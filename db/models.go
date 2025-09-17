@@ -1,54 +1,33 @@
 package db
 
-import (
-	"database/sql"
-
-	"gorm.io/gorm"
-)
-
-type Role string
+import "gorm.io/gorm"
 
 type OauthProvider string
 
-type ContentType string
-
-type MessageStatus string
+type ChatType string
 
 const (
-	User  Role = "user"
-	Admin Role = "admin"
-
 	Google OauthProvider = "google"
 
-	Text  ContentType = "text"
-	Image ContentType = "image"
-	Video ContentType = "video"
-	File  ContentType = "file"
-
-	Sent     MessageStatus = "sent"
-	Received MessageStatus = "received"
-	Read     MessageStatus = "read"
+	PublicChat  ChatType = "public-chat"
+	PrivateChat ChatType = "private-chat"
 )
 
 type Account struct {
 	gorm.Model
-	Username         string         `json:"username" gorm:"unique"`
-	Email            string         `json:"email" gorm:"unique"`
-	Password         sql.NullString `json:"password"`
-	Role             Role           `json:"role"`
-	OauthProvider    sql.NullString `json:"oauth_provider"`
-	OauthProviderID  sql.NullString `json:"oauth_provider_id"`
-	TokenVersion     uint           `json:"token_version"`
-	Friends          []Account      `json:"friends" gorm:"many2many:friends;"`
-	MessagesSent     []Message      `json:"messages_sent" gorm:"foreignKey:SenderID"`
-	MessagesReceived []Message      `json:"messages_received" gorm:"foreignKey:ReceiverID"`
+	Username        string `json:"username" gorm:"not null"`
+	Email           string `json:"email" gorm:"not null"`
+	OauthProvider   string `json:"oauth_provider" gorm:"not null"`
+	OauthProviderID string `json:"oauth_provider_id" gorm:"unique;not null"`
+	TokenVersion    uint   `json:"token_version"`
 }
 
 type Message struct {
 	gorm.Model
-	SenderID   uint          `json:"sender_id"`
-	ReceiverID uint          `json:"receiver_id"`
-	Content    string        `json:"content"` // If the content is image, video or file, content would be the path
-	Type       ContentType   `json:"type"`
-	Status     MessageStatus `json:"status"`
+	SenderID   uint     `json:"sender_id"`
+	Sender     Account  `json:"sender" gorm:"foreignKey:SenderID"`
+	ReceiverID *uint    `json:"receiver_id"`
+	Receiver   *Account `json:"receiver" gorm:"foreignKey:ReceiverID"`
+	ChatType   ChatType `json:"chat_type"`
+	Content    string   `json:"content"`
 }
